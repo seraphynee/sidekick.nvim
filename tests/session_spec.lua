@@ -8,6 +8,10 @@ describe("Herdr session backend", function()
   local orig_tools
   local orig_create
   local orig_warn
+  local orig_executable
+  local orig_has
+  local orig_backends
+  local orig_did_setup
   local sep = string.char(0)
 
   local function json(value)
@@ -201,6 +205,11 @@ describe("Herdr session backend", function()
     orig_tools = Config.tools
     orig_create = Config.cli.mux.create
     orig_warn = Util.warn
+    local Session = require("sidekick.cli.session")
+    orig_executable = vim.fn.executable
+    orig_has = vim.fn.has
+    orig_backends = Session.backends
+    orig_did_setup = Session.did_setup
   end)
 
   after_each(function()
@@ -208,6 +217,11 @@ describe("Herdr session backend", function()
     Config.tools = orig_tools
     Config.cli.mux.create = orig_create
     Util.warn = orig_warn
+    vim.fn.executable = orig_executable
+    vim.fn.has = orig_has
+    local Session = require("sidekick.cli.session")
+    Session.backends = orig_backends
+    Session.did_setup = orig_did_setup
   end)
 
   it("discovers running tools from Herdr panes", function()
@@ -311,5 +325,37 @@ describe("Herdr session backend", function()
     session:detach()
 
     assert.are.same({}, calls)
+  end)
+
+  it("registers Herdr on supported Unix systems", function()
+    local Session = require("sidekick.cli.session")
+    vim.fn.executable = function(name)
+      return name == "herdr" and 1 or 0
+    end
+    vim.fn.has = function(name)
+      return name == "win32" and 0 or orig_has(name)
+    end
+    Session.backends = {}
+    Session.did_setup = false
+
+    Session.setup()
+
+    assert.is_truthy(Session.backends.herdr)
+  end)
+
+  it("does not register Herdr when unavailable or on Windows", function()
+    local Session = require("sidekick.cli.session")
+    for _, platform in ipairs({ "missing", "windows" }) do
+      vim.fn.executable = function(name)
+        return platform ~= "missing" and name == "herdr" and 1 or 0
+      end
+      vim.fn.has = function(name)
+        return name == "win32" and (platform == "windows" and 1 or 0) or orig_has(name)
+      end
+      Session.backends = {}
+      Session.did_setup = false
+      Session.setup()
+      assert.is_nil(Session.backends.herdr)
+    end
   end)
 end)

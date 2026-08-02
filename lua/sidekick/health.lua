@@ -66,8 +66,14 @@ function M.check()
     ok("Terminal multiplexer integration is disabled")
   end
 
-  for _, mux in ipairs({ "tmux", "zellij" }) do
-    if vim.fn.executable(mux) == 1 then
+  for _, mux in ipairs({ "tmux", "zellij", "herdr" }) do
+    if mux == "herdr" and vim.fn.has("win32") == 1 then
+      if mux == Config.cli.mux.backend then
+        error("Multiplexer backend `herdr` is not supported on Windows")
+      else
+        warn("Multiplexer backend `herdr` is not supported on Windows")
+      end
+    elseif vim.fn.executable(mux) == 1 then
       ok("`" .. mux .. "` is installed")
     elseif mux == Config.cli.mux.backend then
       error("Multiplexer backend `" .. mux .. "` is not installed")
