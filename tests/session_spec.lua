@@ -12,6 +12,8 @@ describe("Herdr session backend", function()
   local orig_has
   local orig_backends
   local orig_did_setup
+  local orig_attached
+  local orig_emit
   local sep = string.char(0)
 
   local function json(value)
@@ -238,6 +240,8 @@ describe("Herdr session backend", function()
     orig_has = vim.fn.has
     orig_backends = Session.backends
     orig_did_setup = Session.did_setup
+    orig_attached = Session._attached
+    orig_emit = Util.emit
   end)
 
   after_each(function()
@@ -250,6 +254,8 @@ describe("Herdr session backend", function()
     local Session = require("sidekick.cli.session")
     Session.backends = orig_backends
     Session.did_setup = orig_did_setup
+    Session._attached = orig_attached
+    Util.emit = orig_emit
   end)
 
   it("discovers running tools from Herdr panes", function()
@@ -277,6 +283,10 @@ describe("Herdr session backend", function()
 
     local Herdr = require("sidekick.cli.session.herdr")
     local session = setmetatable({ cwd = "/repo", tool = tool("claude", "claude") }, Herdr)
+    session:init()
+
+    assert.is_false(session.external)
+    assert.are.equal(50, session.priority)
 
     assert.are.same({
       cmd = { "herdr", "terminal", "attach", "term_abc123", "--takeover" },
@@ -297,19 +307,43 @@ describe("Herdr session backend", function()
     }, calls)
   end)
 
-  it("attaches to an existing Herdr terminal", function()
-    local Herdr = require("sidekick.cli.session.herdr")
-    local session = setmetatable({ herdr_terminal_id = "term_abc123" }, Herdr)
+  it("attaches discovered Herdr sessions externally and sends in background", function()
+    local calls, exec = operation_fixture()
+    Util.exec = exec
+    Util.emit = function() end
 
+    local Session = require("sidekick.cli.session")
+    local Herdr = require("sidekick.cli.session.herdr")
+    Session.backends = {}
+    Session._attached = {}
+    Session.register("herdr", Herdr)
+
+    local session = Session.new({
+      backend = "herdr",
+      started = true,
+      id = "herdr: term_abc123",
+      cwd = "/repo",
+      tool = tool("claude", "claude"),
+      herdr_pane_id = "w1:p2",
+      herdr_terminal_id = "term_abc123",
+      mux_session = "term_abc123",
+    })
+
+    assert.is_true(session.external)
+    assert.are.equal(10, session.priority)
+    assert.is_nil(session:attach())
+
+    local attached = Session.attach(session)
+    assert.are.equal(session, attached)
+    assert.is_true(attached:is_attached())
+    assert.are.equal("herdr", attached.backend)
+
+    attached:send("line 1\nline 2")
+    attached:submit()
     assert.are.same({
-      cmd = { "herdr", "terminal", "attach", "term_abc123", "--takeover" },
-      env = {
-        HERDR_ENV = false,
-        HERDR_PANE_ID = false,
-        HERDR_TAB_ID = false,
-        HERDR_WORKSPACE_ID = false,
-      },
-    }, session:attach())
+      { "herdr", "pane", "send-text", "w1:p2", "line 1\nline 2" },
+      { "herdr", "pane", "send-keys", "w1:p2", "enter" },
+    }, calls)
   end)
 
   it("warns and falls back to terminal attach for other create modes", function()

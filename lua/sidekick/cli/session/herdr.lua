@@ -234,8 +234,8 @@ function M.sessions()
 end
 
 function M:init()
-  self.priority = 50
-  self.external = false
+  self.external = self.started and self.herdr_pane_id ~= nil or false
+  self.priority = self.external and 10 or 50
 end
 
 function M:is_running()
@@ -256,7 +256,10 @@ function M:is_running()
 end
 
 function M:attach()
-  return self.herdr_terminal_id and attach_cmd(self.herdr_terminal_id) or nil
+  if self.external or not self.herdr_terminal_id then
+    return
+  end
+  return attach_cmd(self.herdr_terminal_id)
 end
 
 function M:start()
