@@ -131,59 +131,6 @@ local function attached_pids(terminal_id)
   return ret
 end
 
-local function server_ready()
-  return json({ "herdr", "status", "server", "--json" }) ~= nil
-end
-
-local function ensure_server()
-  if server_ready() then
-    return true
-  end
-
-  local job = vim.fn.jobstart({ "herdr", "server" }, { detach = true })
-  if job <= 0 then
-    Util.error("Failed to start Herdr server with `herdr server`.")
-    return false
-  end
-
-  local ready = vim.wait(5000, server_ready, 50)
-  if ready ~= 1 then
-    Util.error({
-      "Herdr server did not become ready.",
-      "Tried `herdr status server` and `herdr server`.",
-    })
-    return false
-  end
-  return true
-end
-
----@param cmd string[]
-local function add_env(cmd, tool)
-  local env = vim.tbl_extend("force", {}, tool.config and tool.config.env or {}, tool.env or {})
-  for key, value in pairs(env) do
-    if value ~= false then
-      vim.list_extend(cmd, { "--env", ("%s=%s"):format(key, tostring(value)) })
-    end
-  end
-end
-
----@param pane_id string
-local function close_pane(pane_id)
-  Util.exec({ "herdr", "pane", "close", pane_id }, { notify = false })
-end
-
-local function attach_cmd(terminal_id)
-  return {
-    cmd = { "herdr", "terminal", "attach", terminal_id, "--takeover" },
-    env = {
-      HERDR_ENV = false,
-      HERDR_PANE_ID = false,
-      HERDR_TAB_ID = false,
-      HERDR_WORKSPACE_ID = false,
-    },
-  }
-end
-
 ---@return sidekick.cli.session.State[]
 function M.sessions()
   local panes = records(json({ "herdr", "pane", "list" }), "panes")
@@ -255,125 +202,14 @@ function M:is_running()
   return false
 end
 
-function M:attach()
-  if self.external or not self.herdr_terminal_id then
-    return
-  end
-  return attach_cmd(self.herdr_terminal_id)
-end
+function M:attach() end
 
+---@return sidekick.cli.terminal.Cmd
 function M:start()
-  if self.herdr_terminal_id then
-    return self:attach()
-  end
-
-  if Config.cli.mux.create ~= "terminal" then
-    Util.warn({
-      ("Herdr does not support `opts.cli.mux.create = %q`."):format(Config.cli.mux.create),
-      "Falling back to `terminal`.",
-      "Please update your config.",
-    })
-  end
-
-  if not ensure_server() then
-    return
-  end
-
-  local workspace_id
-  local tab_id
-  local pane_id
-  local workspaces = records(json({ "herdr", "workspace", "list" }, { notify = true }), "workspaces")
-  local workspace_ids = {}
-  for _, workspace in ipairs(workspaces) do
-    local id = workspace.workspace_id or workspace.id
-    if id then
-      workspace_ids[id] = true
-    end
-    local cwd = workspace.cwd or workspace.workspace_cwd or workspace.path
-    if cwd and vim.fs.normalize(cwd) == vim.fs.normalize(self.cwd) then
-      workspace_id = id
-      break
-    end
-  end
-
-  if not workspace_id then
-    local panes = records(json({ "herdr", "pane", "list" }, { notify = true }), "panes")
-    for _, pane in ipairs(panes) do
-      local cwd = pane.foreground_cwd or pane.cwd
-      if workspace_ids[pane.workspace_id] and cwd and vim.fs.normalize(cwd) == vim.fs.normalize(self.cwd) then
-        workspace_id = pane.workspace_id
-        break
-      end
-    end
-  end
-
-  if workspace_id then
-    local cmd = {
-      "herdr",
-      "tab",
-      "create",
-      "--workspace",
-      workspace_id,
-      "--cwd",
-      self.cwd,
-      "--label",
-      self.tool.name,
-      "--no-focus",
-    }
-    add_env(cmd, self.tool)
-    local response = json(cmd, { notify = true })
-    local tab = record(response, "tab")
-    local root_pane = record(response, "root_pane")
-    tab_id = tab and (tab.tab_id or tab.id)
-    pane_id = root_pane and (root_pane.pane_id or root_pane.id)
-  else
-    local cmd = {
-      "herdr",
-      "workspace",
-      "create",
-      "--cwd",
-      self.cwd,
-      "--label",
-      self.tool.name,
-      "--no-focus",
-    }
-    add_env(cmd, self.tool)
-    local response = json(cmd, { notify = true })
-    local workspace = record(response, "workspace")
-    local tab = record(response, "tab")
-    local root_pane = record(response, "root_pane")
-    workspace_id = workspace and (workspace.workspace_id or workspace.id)
-    tab_id = tab and (tab.tab_id or tab.id)
-    pane_id = root_pane and (root_pane.pane_id or root_pane.id)
-  end
-
-  if not workspace_id or not tab_id or not pane_id then
-    Util.error("Herdr did not return the workspace, tab, or root pane ID.")
-    return
-  end
-
-  local run = { "herdr", "pane", "run", pane_id }
-  vim.list_extend(run, self.tool.cmd)
-  if not Util.exec(run, { notify = true }) then
-    close_pane(pane_id)
-    return
-  end
-
-  local response = json({ "herdr", "pane", "get", pane_id }, { notify = true })
-  local pane = pane_record(record(response, "pane") or {})
-  if not pane.terminal_id then
-    close_pane(pane_id)
-    Util.error("Herdr did not return a terminal ID for the new pane.")
-    return
-  end
-
-  self.herdr_pane_id = pane.pane_id or pane_id
-  self.herdr_terminal_id = pane.terminal_id
-  self.herdr_workspace_id = pane.workspace_id or workspace_id
-  self.herdr_tab_id = pane.tab_id or tab_id
-  self.mux_session = self.herdr_terminal_id
-  self.started = true
-  return self:attach()
+  return {
+    cmd = vim.deepcopy(self.tool.cmd),
+    env = vim.deepcopy(self.tool.env),
+  }
 end
 
 function M:send(text_value)

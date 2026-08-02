@@ -6,14 +6,15 @@ local Util = require("sidekick.util")
 describe("Herdr session backend", function()
   local orig_exec
   local orig_tools
-  local orig_create
-  local orig_warn
   local orig_executable
   local orig_has
   local orig_backends
   local orig_did_setup
   local orig_attached
   local orig_emit
+  local orig_terminal_init
+  local orig_terminal_start
+  local orig_terminal_terminals
   local sep = string.char(0)
 
   local function json(value)
@@ -136,78 +137,6 @@ describe("Herdr session backend", function()
     return calls, exec
   end
 
-  local function lifecycle_fixture()
-    local calls = {}
-    local responses = {
-      ["herdr" .. sep .. "status" .. sep .. "server" .. sep .. "--json"] = json({
-        status = "running",
-        running = true,
-        version = "0.7.5",
-        protocol = 17,
-        compatible = true,
-      }),
-      ["herdr" .. sep .. "workspace" .. sep .. "list"] = json({
-        result = {
-          workspaces = {
-            {
-              workspace_id = "w1",
-              active_tab_id = "w1:t1",
-              label = "repo",
-              pane_count = 1,
-              tab_count = 1,
-            },
-          },
-          type = "workspace_list",
-        },
-      }),
-      ["herdr" .. sep .. "pane" .. sep .. "list"] = json({
-        result = {
-          panes = {
-            {
-              pane_id = "w1:p1",
-              terminal_id = "term_shell",
-              workspace_id = "w1",
-              tab_id = "w1:t1",
-              cwd = "/repo",
-              foreground_cwd = "/repo",
-            },
-          },
-          type = "pane_list",
-        },
-      }),
-      ["herdr" .. sep .. "tab" .. sep .. "create" .. sep .. "--workspace" .. sep .. "w1" .. sep .. "--cwd" .. sep .. "/repo" .. sep .. "--label" .. sep .. "claude" .. sep .. "--no-focus"] = json({
-        result = {
-          tab = { tab_id = "t2" },
-          root_pane = { pane_id = "w1:p2" },
-        },
-      }),
-      ["herdr" .. sep .. "pane" .. sep .. "run" .. sep .. "w1:p2" .. sep .. "claude"] = json({
-        result = {},
-      }),
-      ["herdr" .. sep .. "pane" .. sep .. "get" .. sep .. "w1:p2"] = json({
-        result = {
-          pane = {
-            pane_id = "w1:p2",
-            terminal_id = "term_abc123",
-            workspace_id = "w1",
-            tab_id = "t2",
-            cwd = "/repo",
-          },
-        },
-      }),
-    }
-
-    local function exec(cmd)
-      local key = table.concat(cmd, sep)
-      calls[#calls + 1] = cmd
-      local response = responses[key]
-      assert.is_truthy(response, "Unexpected Herdr command: " .. key:gsub(sep, " "))
-      return response[1], response[2]
-    end
-
-    return calls, exec
-  end
-
   local function operation_fixture()
     local calls = {}
     local responses = {
@@ -233,22 +162,22 @@ describe("Herdr session backend", function()
   before_each(function()
     orig_exec = Util.exec
     orig_tools = Config.tools
-    orig_create = Config.cli.mux.create
-    orig_warn = Util.warn
     local Session = require("sidekick.cli.session")
+    local Terminal = require("sidekick.cli.terminal")
     orig_executable = vim.fn.executable
     orig_has = vim.fn.has
     orig_backends = Session.backends
     orig_did_setup = Session.did_setup
     orig_attached = Session._attached
     orig_emit = Util.emit
+    orig_terminal_init = Terminal.init
+    orig_terminal_start = Terminal.start
+    orig_terminal_terminals = Terminal.terminals
   end)
 
   after_each(function()
     Util.exec = orig_exec
     Config.tools = orig_tools
-    Config.cli.mux.create = orig_create
-    Util.warn = orig_warn
     vim.fn.executable = orig_executable
     vim.fn.has = orig_has
     local Session = require("sidekick.cli.session")
@@ -256,6 +185,10 @@ describe("Herdr session backend", function()
     Session.did_setup = orig_did_setup
     Session._attached = orig_attached
     Util.emit = orig_emit
+    local Terminal = require("sidekick.cli.terminal")
+    Terminal.init = orig_terminal_init
+    Terminal.start = orig_terminal_start
+    Terminal.terminals = orig_terminal_terminals
   end)
 
   it("discovers running tools from Herdr panes", function()
@@ -277,34 +210,73 @@ describe("Herdr session backend", function()
     assert.are.same({ 1234 }, state.pids)
   end)
 
-  it("creates a Herdr tab and returns a direct attach command", function()
-    local calls, exec = lifecycle_fixture()
-    Util.exec = exec
+  it("returns new tool commands without creating Herdr resources", function()
+    local calls = {}
+    Util.exec = function(cmd)
+      calls[#calls + 1] = vim.deepcopy(cmd)
+      local value = cmd[2] == "status" and { running = true } or { result = {} }
+      local stdout = vim.json.encode(value)
+      return vim.split(stdout, "\n", { plain = true, trimempty = true }), stdout
+    end
 
+    local agent = tool("claude", "claude")
+    agent.cmd = { "claude", "--continue" }
+    agent.env = { CLAUDE_CONFIG_DIR = "/tmp/claude", REMOVE_ME = false }
     local Herdr = require("sidekick.cli.session.herdr")
-    local session = setmetatable({ cwd = "/repo", tool = tool("claude", "claude") }, Herdr)
-    session:init()
+    local session = setmetatable({ cwd = "/repo", tool = agent }, Herdr)
 
-    assert.is_false(session.external)
-    assert.are.equal(50, session.priority)
+    local command = session:start()
 
     assert.are.same({
-      cmd = { "herdr", "terminal", "attach", "term_abc123", "--takeover" },
-      env = {
-        HERDR_ENV = false,
-        HERDR_PANE_ID = false,
-        HERDR_TAB_ID = false,
-        HERDR_WORKSPACE_ID = false,
-      },
-    }, session:start())
-    assert.are.same({
-      { "herdr", "status", "server", "--json" },
-      { "herdr", "workspace", "list" },
-      { "herdr", "pane", "list" },
-      { "herdr", "tab", "create", "--workspace", "w1", "--cwd", "/repo", "--label", "claude", "--no-focus" },
-      { "herdr", "pane", "run", "w1:p2", "claude" },
-      { "herdr", "pane", "get", "w1:p2" },
-    }, calls)
+      cmd = { "claude", "--continue" },
+      env = { CLAUDE_CONFIG_DIR = "/tmp/claude", REMOVE_ME = false },
+    }, command)
+    assert.are.same({}, calls)
+
+    command.cmd[1] = "changed"
+    command.env.CLAUDE_CONFIG_DIR = "changed"
+    assert.are.same({ "claude", "--continue" }, agent.cmd)
+    assert.are.same({ CLAUDE_CONFIG_DIR = "/tmp/claude", REMOVE_ME = false }, agent.env)
+  end)
+
+  it("wraps new Herdr-backed tools in a Neovim terminal", function()
+    local calls = {}
+    Util.exec = function(cmd)
+      calls[#calls + 1] = vim.deepcopy(cmd)
+      local value = cmd[2] == "status" and { running = true } or { result = {} }
+      local stdout = vim.json.encode(value)
+      return vim.split(stdout, "\n", { plain = true, trimempty = true }), stdout
+    end
+    Util.emit = function() end
+
+    local Session = require("sidekick.cli.session")
+    local Herdr = require("sidekick.cli.session.herdr")
+    local Terminal = require("sidekick.cli.terminal")
+    Session.backends = {}
+    Session._attached = {}
+    Terminal.terminals = {}
+    Terminal.init = function(self)
+      Terminal.terminals[self.id] = self
+      return self
+    end
+    Terminal.start = function(self)
+      self.started = true
+    end
+    Session.register("herdr", Herdr)
+    Session.register("terminal", Terminal)
+
+    local agent = require("sidekick.cli.tool").get("claude")
+    agent.cmd = { "claude", "--continue" }
+    agent.env = { CLAUDE_CONFIG_DIR = "/tmp/claude" }
+    local session = Session.new({ backend = "herdr", cwd = "/repo", tool = agent })
+
+    local attached = Session.attach(session)
+
+    assert.are.equal("terminal", attached.backend)
+    assert.are.same({ "claude", "--continue" }, attached.tool.cmd)
+    assert.are.same({ CLAUDE_CONFIG_DIR = "/tmp/claude" }, attached.tool.env)
+    assert.are.equal("herdr", attached.mux_backend)
+    assert.are.same({}, calls)
   end)
 
   it("attaches discovered Herdr sessions externally and sends in background", function()
@@ -344,22 +316,6 @@ describe("Herdr session backend", function()
       { "herdr", "pane", "send-text", "w1:p2", "line 1\nline 2" },
       { "herdr", "pane", "send-keys", "w1:p2", "enter" },
     }, calls)
-  end)
-
-  it("warns and falls back to terminal attach for other create modes", function()
-    local _, exec = lifecycle_fixture()
-    Util.exec = exec
-    Config.cli.mux.create = "split"
-    local warnings = {}
-    Util.warn = function(msg)
-      warnings[#warnings + 1] = msg
-    end
-
-    local Herdr = require("sidekick.cli.session.herdr")
-    local session = setmetatable({ cwd = "/repo", tool = tool("claude", "claude") }, Herdr)
-    session:start()
-
-    assert.is_true(#warnings > 0)
   end)
 
   it("sends input and reads Herdr scrollback", function()
