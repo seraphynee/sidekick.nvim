@@ -96,7 +96,7 @@ end
 ---@param pane table
 ---@return sidekick.cli.Proc[]
 local function pane_processes(pane)
-  local response = json({ "herdr", "pane", "process-info", pane.pane_id })
+  local response = json({ "herdr", "pane", "process-info", "--pane", pane.pane_id })
   local result = response and response.result
   if type(result) ~= "table" then
     return {}
@@ -132,7 +132,7 @@ local function attached_pids(terminal_id)
 end
 
 local function server_ready()
-  return json({ "herdr", "status", "--json", "server" }) ~= nil
+  return json({ "herdr", "status", "server", "--json" }) ~= nil
 end
 
 local function ensure_server()
@@ -280,11 +280,27 @@ function M:start()
   local tab_id
   local pane_id
   local workspaces = records(json({ "herdr", "workspace", "list" }, { notify = true }), "workspaces")
+  local workspace_ids = {}
   for _, workspace in ipairs(workspaces) do
+    local id = workspace.workspace_id or workspace.id
+    if id then
+      workspace_ids[id] = true
+    end
     local cwd = workspace.cwd or workspace.workspace_cwd or workspace.path
     if cwd and vim.fs.normalize(cwd) == vim.fs.normalize(self.cwd) then
-      workspace_id = workspace.workspace_id or workspace.id
+      workspace_id = id
       break
+    end
+  end
+
+  if not workspace_id then
+    local panes = records(json({ "herdr", "pane", "list" }, { notify = true }), "panes")
+    for _, pane in ipairs(panes) do
+      local cwd = pane.foreground_cwd or pane.cwd
+      if workspace_ids[pane.workspace_id] and cwd and vim.fs.normalize(cwd) == vim.fs.normalize(self.cwd) then
+        workspace_id = pane.workspace_id
+        break
+      end
     end
   end
 

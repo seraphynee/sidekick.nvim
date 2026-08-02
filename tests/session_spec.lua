@@ -90,7 +90,7 @@ describe("Herdr session backend", function()
           },
         },
       }),
-      ["herdr" .. sep .. "pane" .. sep .. "process-info" .. sep .. "w1:p2"] = json({
+      ["herdr" .. sep .. "pane" .. sep .. "process-info" .. sep .. "--pane" .. sep .. "w1:p2"] = json({
         result = {
           process_info = {
             foreground_processes = {
@@ -104,7 +104,7 @@ describe("Herdr session backend", function()
           },
         },
       }),
-      ["herdr" .. sep .. "pane" .. sep .. "process-info" .. sep .. "w1:p3"] = json({
+      ["herdr" .. sep .. "pane" .. sep .. "process-info" .. sep .. "--pane" .. sep .. "w1:p3"] = json({
         result = {
           processes = {
             {
@@ -116,7 +116,7 @@ describe("Herdr session backend", function()
           },
         },
       }),
-      ["herdr" .. sep .. "pane" .. sep .. "process-info" .. sep .. "w1:p4"] = json({
+      ["herdr" .. sep .. "pane" .. sep .. "process-info" .. sep .. "--pane" .. sep .. "w1:p4"] = json({
         result = {
           processes = {},
         },
@@ -137,14 +137,40 @@ describe("Herdr session backend", function()
   local function lifecycle_fixture()
     local calls = {}
     local responses = {
-      ["herdr" .. sep .. "status" .. sep .. "--json" .. sep .. "server"] = json({
-        result = { server = { running = true } },
+      ["herdr" .. sep .. "status" .. sep .. "server" .. sep .. "--json"] = json({
+        status = "running",
+        running = true,
+        version = "0.7.5",
+        protocol = 17,
+        compatible = true,
       }),
       ["herdr" .. sep .. "workspace" .. sep .. "list"] = json({
         result = {
           workspaces = {
-            { workspace_id = "w1", cwd = "/repo" },
+            {
+              workspace_id = "w1",
+              active_tab_id = "w1:t1",
+              label = "repo",
+              pane_count = 1,
+              tab_count = 1,
+            },
           },
+          type = "workspace_list",
+        },
+      }),
+      ["herdr" .. sep .. "pane" .. sep .. "list"] = json({
+        result = {
+          panes = {
+            {
+              pane_id = "w1:p1",
+              terminal_id = "term_shell",
+              workspace_id = "w1",
+              tab_id = "w1:t1",
+              cwd = "/repo",
+              foreground_cwd = "/repo",
+            },
+          },
+          type = "pane_list",
         },
       }),
       ["herdr" .. sep .. "tab" .. sep .. "create" .. sep .. "--workspace" .. sep .. "w1" .. sep .. "--cwd" .. sep .. "/repo" .. sep .. "--label" .. sep .. "claude" .. sep .. "--no-focus"] = json({
@@ -262,8 +288,9 @@ describe("Herdr session backend", function()
       },
     }, session:start())
     assert.are.same({
-      { "herdr", "status", "--json", "server" },
+      { "herdr", "status", "server", "--json" },
       { "herdr", "workspace", "list" },
+      { "herdr", "pane", "list" },
       { "herdr", "tab", "create", "--workspace", "w1", "--cwd", "/repo", "--label", "claude", "--no-focus" },
       { "herdr", "pane", "run", "w1:p2", "claude" },
       { "herdr", "pane", "get", "w1:p2" },
