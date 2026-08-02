@@ -92,12 +92,14 @@ describe("Herdr session backend", function()
       }),
       ["herdr" .. sep .. "pane" .. sep .. "process-info" .. sep .. "w1:p2"] = json({
         result = {
-          processes = {
-            {
-              pid = 1234,
-              name = "claude",
-              argv = { "claude" },
-              cwd = "/repo",
+          process_info = {
+            foreground_processes = {
+              {
+                pid = 1234,
+                name = "claude",
+                argv = { "claude" },
+                cwd = "/repo",
+              },
             },
           },
         },

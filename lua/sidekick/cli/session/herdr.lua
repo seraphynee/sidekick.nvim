@@ -101,9 +101,12 @@ local function pane_processes(pane)
   if type(result) ~= "table" then
     return {}
   end
-  local raw = result.processes
-  if type(raw) ~= "table" and type(result.foreground_process) == "table" then
-    raw = { result.foreground_process }
+  local info = type(result.process_info) == "table" and result.process_info or result
+  local raw = info.foreground_processes or info.processes
+  if type(raw) ~= "table" and type(info.foreground_process) == "table" then
+    raw = { info.foreground_process }
+  elseif type(raw) == "table" and raw.pid then
+    raw = { raw }
   end
   local ret = {}
   for _, process in ipairs(raw or {}) do
@@ -200,6 +203,7 @@ function M.sessions()
         end
         vim.list_extend(pids, attached_pids(pane.terminal_id))
 
+        local matched = false
         for _, process in ipairs(processes) do
           for _, tool in pairs(tools) do
             if tool:is_proc(process) then
@@ -214,8 +218,12 @@ function M.sessions()
                 mux_session = pane.terminal_id,
                 pids = pids,
               }
+              matched = true
               break
             end
+          end
+          if matched then
+            break
           end
         end
       end
@@ -273,7 +281,7 @@ function M:start()
   local pane_id
   local workspaces = records(json({ "herdr", "workspace", "list" }, { notify = true }), "workspaces")
   for _, workspace in ipairs(workspaces) do
-    local cwd = workspace.cwd or workspace.path
+    local cwd = workspace.cwd or workspace.workspace_cwd or workspace.path
     if cwd and vim.fs.normalize(cwd) == vim.fs.normalize(self.cwd) then
       workspace_id = workspace.workspace_id or workspace.id
       break
@@ -320,8 +328,8 @@ function M:start()
     pane_id = root_pane and (root_pane.pane_id or root_pane.id)
   end
 
-  if not workspace_id or not pane_id then
-    Util.error("Herdr did not return the workspace or root pane ID.")
+  if not workspace_id or not tab_id or not pane_id then
+    Util.error("Herdr did not return the workspace, tab, or root pane ID.")
     return
   end
 
