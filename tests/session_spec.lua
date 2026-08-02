@@ -6,6 +6,8 @@ local Util = require("sidekick.util")
 describe("Herdr session backend", function()
   local orig_exec
   local orig_tools
+  local orig_create
+  local orig_warn
   local sep = string.char(0)
 
   local function json(value)
@@ -126,14 +128,86 @@ describe("Herdr session backend", function()
     return calls, exec
   end
 
+  local function lifecycle_fixture()
+    local calls = {}
+    local responses = {
+      ["herdr" .. sep .. "status" .. sep .. "--json" .. sep .. "server"] = json({
+        result = { server = { running = true } },
+      }),
+      ["herdr" .. sep .. "workspace" .. sep .. "list"] = json({
+        result = {
+          workspaces = {
+            { workspace_id = "w1", cwd = "/repo" },
+          },
+        },
+      }),
+      ["herdr" .. sep .. "tab" .. sep .. "create" .. sep .. "--workspace" .. sep .. "w1" .. sep .. "--cwd" .. sep .. "/repo" .. sep .. "--label" .. sep .. "claude" .. sep .. "--no-focus"] = json({
+        result = {
+          tab = { tab_id = "t2" },
+          root_pane = { pane_id = "w1:p2" },
+        },
+      }),
+      ["herdr" .. sep .. "pane" .. sep .. "run" .. sep .. "w1:p2" .. sep .. "claude"] = json({
+        result = {},
+      }),
+      ["herdr" .. sep .. "pane" .. sep .. "get" .. sep .. "w1:p2"] = json({
+        result = {
+          pane = {
+            pane_id = "w1:p2",
+            terminal_id = "term_abc123",
+            workspace_id = "w1",
+            tab_id = "t2",
+            cwd = "/repo",
+          },
+        },
+      }),
+    }
+
+    local function exec(cmd)
+      local key = table.concat(cmd, sep)
+      calls[#calls + 1] = cmd
+      local response = responses[key]
+      assert.is_truthy(response, "Unexpected Herdr command: " .. key:gsub(sep, " "))
+      return response[1], response[2]
+    end
+
+    return calls, exec
+  end
+
+  local function operation_fixture()
+    local calls = {}
+    local responses = {
+      ["herdr" .. sep .. "pane" .. sep .. "send-text" .. sep .. "w1:p2" .. sep .. "line 1\nline 2"] = { {}, "" },
+      ["herdr" .. sep .. "pane" .. sep .. "send-keys" .. sep .. "w1:p2" .. sep .. "enter"] = { {}, "" },
+      ["herdr" .. sep .. "pane" .. sep .. "read" .. sep .. "w1:p2" .. sep .. "--source" .. sep .. "recent-unwrapped" .. sep .. "--lines" .. sep .. "2000"] = {
+        { "captured output" },
+        "captured output",
+      },
+    }
+
+    local function exec(cmd)
+      local key = table.concat(cmd, sep)
+      calls[#calls + 1] = cmd
+      local response = responses[key]
+      assert.is_truthy(response, "Unexpected Herdr command: " .. key:gsub(sep, " "))
+      return response[1], response[2]
+    end
+
+    return calls, exec
+  end
+
   before_each(function()
     orig_exec = Util.exec
     orig_tools = Config.tools
+    orig_create = Config.cli.mux.create
+    orig_warn = Util.warn
   end)
 
   after_each(function()
     Util.exec = orig_exec
     Config.tools = orig_tools
+    Config.cli.mux.create = orig_create
+    Util.warn = orig_warn
   end)
 
   it("discovers running tools from Herdr panes", function()
@@ -153,5 +227,89 @@ describe("Herdr session backend", function()
     assert.are.equal("/repo", state.cwd)
     assert.are.equal("claude", state.tool.name)
     assert.are.same({ 1234 }, state.pids)
+  end)
+
+  it("creates a Herdr tab and returns a direct attach command", function()
+    local calls, exec = lifecycle_fixture()
+    Util.exec = exec
+
+    local Herdr = require("sidekick.cli.session.herdr")
+    local session = setmetatable({ cwd = "/repo", tool = tool("claude", "claude") }, Herdr)
+
+    assert.are.same({
+      cmd = { "herdr", "terminal", "attach", "term_abc123", "--takeover" },
+      env = {
+        HERDR_ENV = false,
+        HERDR_PANE_ID = false,
+        HERDR_TAB_ID = false,
+        HERDR_WORKSPACE_ID = false,
+      },
+    }, session:start())
+    assert.are.same({
+      { "herdr", "status", "--json", "server" },
+      { "herdr", "workspace", "list" },
+      { "herdr", "tab", "create", "--workspace", "w1", "--cwd", "/repo", "--label", "claude", "--no-focus" },
+      { "herdr", "pane", "run", "w1:p2", "claude" },
+      { "herdr", "pane", "get", "w1:p2" },
+    }, calls)
+  end)
+
+  it("attaches to an existing Herdr terminal", function()
+    local Herdr = require("sidekick.cli.session.herdr")
+    local session = setmetatable({ herdr_terminal_id = "term_abc123" }, Herdr)
+
+    assert.are.same({
+      cmd = { "herdr", "terminal", "attach", "term_abc123", "--takeover" },
+      env = {
+        HERDR_ENV = false,
+        HERDR_PANE_ID = false,
+        HERDR_TAB_ID = false,
+        HERDR_WORKSPACE_ID = false,
+      },
+    }, session:attach())
+  end)
+
+  it("warns and falls back to terminal attach for other create modes", function()
+    local _, exec = lifecycle_fixture()
+    Util.exec = exec
+    Config.cli.mux.create = "split"
+    local warnings = {}
+    Util.warn = function(msg)
+      warnings[#warnings + 1] = msg
+    end
+
+    local Herdr = require("sidekick.cli.session.herdr")
+    local session = setmetatable({ cwd = "/repo", tool = tool("claude", "claude") }, Herdr)
+    session:start()
+
+    assert.is_true(#warnings > 0)
+  end)
+
+  it("sends input and reads Herdr scrollback", function()
+    local calls, exec = operation_fixture()
+    Util.exec = exec
+
+    local Herdr = require("sidekick.cli.session.herdr")
+    local session = setmetatable({ herdr_pane_id = "w1:p2" }, Herdr)
+    session:send("line 1\nline 2")
+    session:submit()
+
+    assert.are.equal("captured output", session:dump())
+    assert.are.same({
+      { "herdr", "pane", "send-text", "w1:p2", "line 1\nline 2" },
+      { "herdr", "pane", "send-keys", "w1:p2", "enter" },
+      { "herdr", "pane", "read", "w1:p2", "--source", "recent-unwrapped", "--lines", "2000" },
+    }, calls)
+  end)
+
+  it("does not close Herdr resources when detached", function()
+    local calls, exec = operation_fixture()
+    Util.exec = exec
+
+    local Herdr = require("sidekick.cli.session.herdr")
+    local session = setmetatable({ herdr_pane_id = "w1:p2" }, Herdr)
+    session:detach()
+
+    assert.are.same({}, calls)
   end)
 end)
