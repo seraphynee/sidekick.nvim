@@ -43,6 +43,7 @@ describe("Herdr session backend", function()
               terminal_id = "term_abc123",
               workspace_id = "w1",
               tab_id = "t1",
+              agent = "pi",
               cwd = "/repo",
             },
             {
@@ -68,6 +69,7 @@ describe("Herdr session backend", function()
             terminal_id = "term_abc123",
             workspace_id = "w1",
             tab_id = "t1",
+            agent = "pi",
             cwd = "/repo",
           },
         },
@@ -99,8 +101,8 @@ describe("Herdr session backend", function()
             foreground_processes = {
               {
                 pid = 1234,
-                name = "claude",
-                argv = { "claude" },
+                name = "node",
+                argv0 = "pi",
                 cwd = "/repo",
               },
             },
@@ -112,8 +114,8 @@ describe("Herdr session backend", function()
           processes = {
             {
               pid = 2345,
-              name = "bash",
-              argv = { "bash" },
+              name = "python",
+              argv0 = "aider",
               cwd = "/repo",
             },
           },
@@ -195,19 +197,46 @@ describe("Herdr session backend", function()
     local calls, exec = fixture()
     Util.exec = exec
     Config.tools = function()
-      return { tool("claude", "claude") }
+      return { tool("pi", "pi"), tool("aider", "aider") }
     end
 
     local states = require("sidekick.cli.session.herdr").sessions()
 
-    assert.are.equal(1, #states)
-    local state = states[1]
-    assert.are.equal("herdr: term_abc123", state.id)
-    assert.are.equal("term_abc123", state.mux_session)
-    assert.are.equal("w1:p2", state.herdr_pane_id)
-    assert.are.equal("/repo", state.cwd)
-    assert.are.equal("claude", state.tool.name)
-    assert.are.same({ 1234 }, state.pids)
+    assert.are.equal(2, #states)
+    assert.are.equal("herdr: term_abc123", states[1].id)
+    assert.are.equal("term_abc123", states[1].mux_session)
+    assert.are.equal("w1:p2", states[1].herdr_pane_id)
+    assert.are.equal("/repo", states[1].cwd)
+    assert.are.equal("pi", states[1].tool.name)
+    assert.are.same({ 1234 }, states[1].pids)
+    assert.are.equal("aider", states[2].tool.name)
+    assert.are.same({ 2345 }, states[2].pids)
+  end)
+
+  it("uses Herdr agent identity when checking a session", function()
+    local calls = {}
+    Util.exec = function(cmd)
+      calls[#calls + 1] = vim.deepcopy(cmd)
+      return unpack(json({
+        result = {
+          pane = {
+            pane_id = "w1:p2",
+            terminal_id = "term_abc123",
+            agent = "pi",
+          },
+        },
+      }))
+    end
+
+    local Herdr = require("sidekick.cli.session.herdr")
+    local session = setmetatable({
+      tool = tool("pi", "pi"),
+      herdr_pane_id = "w1:p2",
+      herdr_terminal_id = "term_abc123",
+    }, Herdr)
+
+    assert.is_true(session:is_running())
+    assert.are.same({ { "herdr", "pane", "get", "w1:p2" } }, calls)
   end)
 
   it("returns new tool commands without creating Herdr resources", function()

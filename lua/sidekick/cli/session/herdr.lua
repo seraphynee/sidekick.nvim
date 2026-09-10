@@ -62,6 +62,7 @@ local function pane_record(pane)
     terminal_id = pane.terminal_id,
     workspace_id = pane.workspace_id,
     tab_id = pane.tab_id,
+    agent = pane.agent,
     cwd = pane.cwd or pane.foreground_cwd,
     foreground_cwd = pane.foreground_cwd,
   }
@@ -77,7 +78,7 @@ local function normalize_process(pane, process)
   local cmd = process.cmdline
   if type(cmd) ~= "string" or cmd == "" then
     local argv = process.argv or {}
-    cmd = table.concat(argv, " ")
+    cmd = process.argv0 or table.concat(argv, " ")
     if cmd == "" then
       cmd = process.name or ""
     end
@@ -118,6 +119,25 @@ local function pane_processes(pane)
   return ret
 end
 
+---@param pane table
+---@param processes sidekick.cli.Proc[]
+---@param tools table<string, sidekick.cli.Tool>
+---@return sidekick.cli.Tool?, sidekick.cli.Proc?
+local function pane_tool(pane, processes, tools)
+  for _, tool in pairs(tools) do
+    if pane.agent == tool.name then
+      return tool, processes[1]
+    end
+  end
+  for _, process in ipairs(processes) do
+    for _, tool in pairs(tools) do
+      if tool:is_proc(process) then
+        return tool, process
+      end
+    end
+  end
+end
+
 ---@param terminal_id string
 ---@return integer[]
 local function attached_pids(terminal_id)
@@ -150,28 +170,19 @@ function M.sessions()
         end
         vim.list_extend(pids, attached_pids(pane.terminal_id))
 
-        local matched = false
-        for _, process in ipairs(processes) do
-          for _, tool in pairs(tools) do
-            if tool:is_proc(process) then
-              ret[#ret + 1] = {
-                id = "herdr: " .. pane.terminal_id,
-                cwd = process.cwd or pane.foreground_cwd or pane.cwd,
-                tool = tool,
-                herdr_pane_id = pane.pane_id,
-                herdr_terminal_id = pane.terminal_id,
-                herdr_workspace_id = pane.workspace_id,
-                herdr_tab_id = pane.tab_id,
-                mux_session = pane.terminal_id,
-                pids = pids,
-              }
-              matched = true
-              break
-            end
-          end
-          if matched then
-            break
-          end
+        local tool, process = pane_tool(pane, processes, tools)
+        if tool then
+          ret[#ret + 1] = {
+            id = "herdr: " .. pane.terminal_id,
+            cwd = process and process.cwd or pane.foreground_cwd or pane.cwd,
+            tool = tool,
+            herdr_pane_id = pane.pane_id,
+            herdr_terminal_id = pane.terminal_id,
+            herdr_workspace_id = pane.workspace_id,
+            herdr_tab_id = pane.tab_id,
+            mux_session = pane.terminal_id,
+            pids = pids,
+          }
         end
       end
     end
@@ -193,6 +204,8 @@ function M:is_running()
   local pane = pane_record(record(response, "pane") or {})
   if pane.terminal_id ~= self.herdr_terminal_id then
     return false
+  elseif pane.agent then
+    return pane.agent == self.tool.name
   end
   for _, process in ipairs(pane_processes(pane)) do
     if self.tool:is_proc(process) then
